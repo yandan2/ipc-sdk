@@ -19,6 +19,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <png.h>
 
 static volatile sig_atomic_t g_interrupted = 0;
 
@@ -28,9 +29,12 @@ static volatile sig_atomic_t g_interrupted = 0;
 
 typedef struct
 {
-    void  *pixels; /* 连续像素缓冲区，由生产者 malloc，消费者 free。 */
-    size_t size;
-    char   path[256];
+    void      *pixels; /* 连续像素缓冲区，由生产者 malloc，消费者 free。 */
+    size_t     size;
+    unsigned   width;
+    unsigned   height;
+    IPC_FORMAT format;
+    char       path[256];
 } SaveItem;
 
 typedef struct
@@ -42,11 +46,91 @@ typedef struct
     pthread_cond_t  not_empty;
 } SaveQueue;
 
+/* 将连续像素缓冲区写为 PNG（压缩级别 1）；YUV 格式回退为原始文件。 */
+static void write_png(const SaveItem *item)
+{
+    FILE            *fp;
+    png_structp      png;
+    png_infop        info;
+    int              color_type;
+    unsigned         row_bytes;
+    int              bgr;
+    const uint8_t   *row;
+    unsigned         y;
+
+    switch (item->format)
+    {
+    case IPC_RGB:
+        color_type = PNG_COLOR_TYPE_RGB;  row_bytes = item->width * 3; bgr = 0; break;
+    case IPC_BGR:
+        color_type = PNG_COLOR_TYPE_RGB;  row_bytes = item->width * 3; bgr = 1; break;
+    case IPC_RGBA:
+        color_type = PNG_COLOR_TYPE_RGBA; row_bytes = item->width * 4; bgr = 0; break;
+    case IPC_BGRA:
+        color_type = PNG_COLOR_TYPE_RGBA; row_bytes = item->width * 4; bgr = 1; break;
+    case IPC_GRAY8:
+        color_type = PNG_COLOR_TYPE_GRAY; row_bytes = item->width;     bgr = 0; break;
+    default:
+        /* NV12/NV21/I420 不是 PNG 支持的格式，直接写原始文件。 */
+        fp = fopen(item->path, "wb");
+        if (fp)
+        {
+            fwrite(item->pixels, 1, item->size, fp);
+            fclose(fp);
+        }
+        return;
+    }
+
+    fp = fopen(item->path, "wb");
+    if (!fp)
+    {
+        fprintf(stderr, "save: cannot open %s\n", item->path);
+        return;
+    }
+    png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png)
+    {
+        fclose(fp);
+        return;
+    }
+    info = png_create_info_struct(png);
+    if (!info)
+    {
+        png_destroy_write_struct(&png, NULL);
+        fclose(fp);
+        return;
+    }
+    if (setjmp(png_jmpbuf(png)))
+    {
+        png_destroy_write_struct(&png, &info);
+        fclose(fp);
+        return;
+    }
+    png_init_io(png, fp);
+    png_set_compression_level(png, 1);
+    if (bgr)
+    {
+        png_set_bgr(png);
+    }
+    png_set_IHDR(png, info, item->width, item->height, 8, color_type,
+                 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+                 PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+    row = item->pixels;
+    for (y = 0; y < item->height; y++)
+    {
+        png_write_row(png, row);
+        row += row_bytes;
+    }
+    png_write_end(png, NULL);
+    png_destroy_write_struct(&png, &info);
+    fclose(fp);
+}
+
 static void *save_thread_fn(void *arg)
 {
     SaveQueue       *q = arg;
     SaveItem         item;
-    FILE            *f;
     struct timespec  t0, t1;
     long             save_us;
 
@@ -68,16 +152,7 @@ static void *save_thread_fn(void *arg)
         pthread_mutex_unlock(&q->lock);
 
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        f = fopen(item.path, "wb");
-        if (f)
-        {
-            fwrite(item.pixels, 1, item.size, f);
-            fclose(f);
-        }
-        else
-        {
-            fprintf(stderr, "save: cannot open %s\n", item.path);
-        }
+        write_png(&item);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         save_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
         printf("saved %s  %.2f ms\n", item.path, save_us / 1000.0);
@@ -124,8 +199,15 @@ static void enqueue_save(SaveQueue *q, const IPC_FRAME *frame,
     slot         = &q->items[q->tail];
     slot->pixels = buf;
     slot->size   = sz;
-    snprintf(slot->path, sizeof(slot->path), "%s/frame_%s_%03ld_%04u.raw",
-             dir, ts, wall.tv_nsec / 1000000L, frame_num);
+    slot->width  = frame->width;
+    slot->height = frame->height;
+    slot->format = frame->format;
+    snprintf(slot->path, sizeof(slot->path),
+             "%s/frame_%s_%03ld_%04u.%s",
+             dir, ts, wall.tv_nsec / 1000000L, frame_num,
+             (frame->format == IPC_RGB || frame->format == IPC_BGR  ||
+              frame->format == IPC_RGBA || frame->format == IPC_BGRA ||
+              frame->format == IPC_GRAY8) ? "png" : "yuv");
     q->tail = (q->tail + 1) % SAVE_DEPTH;
     q->count++;
     pthread_cond_signal(&q->not_empty);
