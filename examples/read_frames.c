@@ -16,8 +16,123 @@
 #include <signal.h>
 #include <errno.h>
 #include <limits.h>
+#include <time.h>
+#include <pthread.h>
+#include <sys/stat.h>
 
 static volatile sig_atomic_t g_interrupted = 0;
+
+/* ---------- 保存线程 ---------- */
+
+#define SAVE_DEPTH 8 /* 环形队列深度；队满时丢帧并打印警告。 */
+
+typedef struct
+{
+    void  *pixels; /* 连续像素缓冲区，由生产者 malloc，消费者 free。 */
+    size_t size;
+    char   path[256];
+} SaveItem;
+
+typedef struct
+{
+    SaveItem        items[SAVE_DEPTH];
+    int             head, tail, count;
+    volatile int    done; /* 置 1 后消费者排空队列再退出。 */
+    pthread_mutex_t lock;
+    pthread_cond_t  not_empty;
+} SaveQueue;
+
+static void *save_thread_fn(void *arg)
+{
+    SaveQueue       *q = arg;
+    SaveItem         item;
+    FILE            *f;
+    struct timespec  t0, t1;
+    long             save_us;
+
+    for (;;)
+    {
+        pthread_mutex_lock(&q->lock);
+        while (q->count == 0 && !q->done)
+        {
+            pthread_cond_wait(&q->not_empty, &q->lock);
+        }
+        if (q->count == 0)
+        {
+            pthread_mutex_unlock(&q->lock);
+            break;
+        }
+        item    = q->items[q->head];
+        q->head = (q->head + 1) % SAVE_DEPTH;
+        q->count--;
+        pthread_mutex_unlock(&q->lock);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        f = fopen(item.path, "wb");
+        if (f)
+        {
+            fwrite(item.pixels, 1, item.size, f);
+            fclose(f);
+        }
+        else
+        {
+            fprintf(stderr, "save: cannot open %s\n", item.path);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        save_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+        printf("saved %s  %.2f ms\n", item.path, save_us / 1000.0);
+        free(item.pixels);
+    }
+    return NULL;
+}
+
+/* 生产者：复制帧像素并入队；队满时丢帧。 */
+static void enqueue_save(SaveQueue *q, const IPC_FRAME *frame,
+                         const char *dir, unsigned frame_num)
+{
+    struct timespec wall;
+    struct tm       tm_buf;
+    char            ts[32];
+    SaveItem       *slot;
+    size_t          sz;
+    void           *buf;
+
+    clock_gettime(CLOCK_REALTIME, &wall);
+    localtime_r(&wall.tv_sec, &tm_buf);
+    strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_buf);
+
+    sz  = ipc_frame_size(frame);
+    buf = malloc(sz);
+    if (!buf)
+    {
+        return;
+    }
+    if (ipc_frame_copy(frame, buf, sz) != IPC_OK)
+    {
+        free(buf);
+        return;
+    }
+
+    pthread_mutex_lock(&q->lock);
+    if (q->count == SAVE_DEPTH)
+    {
+        pthread_mutex_unlock(&q->lock);
+        free(buf);
+        fprintf(stderr, "save queue full, frame %u dropped\n", frame_num);
+        return;
+    }
+    slot         = &q->items[q->tail];
+    slot->pixels = buf;
+    slot->size   = sz;
+    snprintf(slot->path, sizeof(slot->path), "%s/frame_%s_%03ld_%04u.raw",
+             dir, ts, wall.tv_nsec / 1000000L, frame_num);
+    q->tail = (q->tail + 1) % SAVE_DEPTH;
+    q->count++;
+    pthread_cond_signal(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
+}
+
+/* ---------- 工具函数 ---------- */
 
 /* 信号处理器只置位退出标志，避免在异步信号上下文调用非安全库函数。 */
 static void stop(int sig)
@@ -128,6 +243,8 @@ static int configure_transport(IPC_CONFIG *config)
     return ipc_config_set_transport(config, transport) == IPC_OK;
 }
 
+/* ---------- 主程序 ---------- */
+
 /* 解析配置后按 open/read/release/close 顺序操作；错误和信号退出均关闭句柄。 */
 int main(int argc, char **argv)
 {
@@ -139,6 +256,7 @@ int main(int argc, char **argv)
     };
     unsigned frames = 0;
     const char *conversion = NULL;
+    const char *savedir = NULL;
     char error[192] =
     {
         0,
@@ -151,6 +269,8 @@ int main(int argc, char **argv)
         0,
     };
     IPC_STATUS status = IPC_TIMEOUT;
+    SaveQueue sq;
+    pthread_t save_tid;
 
     if (argc < 3 || argc > 4)
     {
@@ -159,7 +279,8 @@ int main(int argc, char **argv)
                 "IPC_USER / IPC_PASSWORD: credentials; IPC_PATH: vendor RTSP path.\n"
                 "IPC_FRAMES (120), IPC_TRANSPORT (auto|tcp|udp),\n"
                 "IPC_LATENCY_MS (50), IPC_TIMEOUT_MS (10000), IPC_PORT (554),\n"
-                "IPC_CONVERSION (auto|mpp|cpu). Ctrl-C stops capture.\n",
+                "IPC_CONVERSION (auto|mpp|cpu).\n"
+                "IPC_SAVEDIR: 保存目录，默认 frames；设为空串禁用保存。Ctrl-C stops capture.\n",
                 argv[0]);
         return 2;
     }
@@ -207,12 +328,47 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+
+    /* 初始化保存队列并启动保存线程；IPC_SAVEDIR="" 禁用保存。 */
+    savedir = getenv("IPC_SAVEDIR");
+    if (!savedir)
+    {
+        savedir = "/home/geekplus/temp/ipc/picture";
+    }
+    memset(&sq, 0, sizeof(sq));
+    pthread_mutex_init(&sq.lock, NULL);
+    pthread_cond_init(&sq.not_empty, NULL);
+    if (*savedir)
+    {
+        char abspath[512];
+        mkdir(savedir, 0755);
+        pthread_create(&save_tid, NULL, save_thread_fn, &sq);
+        if (realpath(savedir, abspath))
+        {
+            printf("保存目录: %s\n", abspath);
+        }
+        else
+        {
+            printf("保存目录: %s\n", savedir);
+        }
+    }
+
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
     handle = ipc_open(&config, error, sizeof(error));
     if (!handle)
     {
         fprintf(stderr, "%s\n", error);
+        if (*savedir)
+        {
+            pthread_mutex_lock(&sq.lock);
+            sq.done = 1;
+            pthread_cond_signal(&sq.not_empty);
+            pthread_mutex_unlock(&sq.lock);
+            pthread_join(save_tid, NULL);
+        }
+        pthread_cond_destroy(&sq.not_empty);
+        pthread_mutex_destroy(&sq.lock);
         return 1;
     }
     while (count < frames && !g_interrupted)
@@ -258,6 +414,13 @@ int main(int argc, char **argv)
             fflush(stdout);
         }
         ++count;
+
+        /* 将本帧异步提交给保存线程。 */
+        if (*savedir)
+        {
+            enqueue_save(&sq, &frame, savedir, count);
+        }
+
         ipc_frame_release(&frame);
         if (result)
         {
@@ -265,6 +428,19 @@ int main(int argc, char **argv)
         }
     }
     ipc_close(handle);
+
+    /* 通知保存线程排空队列后退出，再回收资源。 */
+    if (*savedir)
+    {
+        pthread_mutex_lock(&sq.lock);
+        sq.done = 1;
+        pthread_cond_signal(&sq.not_empty);
+        pthread_mutex_unlock(&sq.lock);
+        pthread_join(save_tid, NULL);
+    }
+    pthread_cond_destroy(&sq.not_empty);
+    pthread_mutex_destroy(&sq.lock);
+
     printf("frames=%u status=%s\n", count,
            result          ? "FAILED"
            : g_interrupted ? "INTERRUPTED"
