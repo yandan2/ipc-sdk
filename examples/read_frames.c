@@ -340,7 +340,22 @@ int main(int argc, char **argv)
     pthread_cond_init(&sq.not_empty, NULL);
     if (*savedir)
     {
-        mkdir(savedir, 0755);
+        /* 递归创建目录，等效于 mkdir -p。 */
+        {
+            char tmp[256];
+            char *p;
+            snprintf(tmp, sizeof(tmp), "%s", savedir);
+            for (p = tmp + 1; *p; p++)
+            {
+                if (*p == '/')
+                {
+                    *p = '\0';
+                    mkdir(tmp, 0755);
+                    *p = '/';
+                }
+            }
+            mkdir(tmp, 0755);
+        }
         pthread_create(&save_tid, NULL, save_thread_fn, &sq);
         printf("保存目录: %s\n", savedir);
     }
