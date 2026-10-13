@@ -62,6 +62,7 @@ struct IPC_HANDLE
     gboolean layout_cpu;           /* I420 拆分或 GRAY8 视图，输入始终为 NV12。 */
     IPC_FORMAT format;             /* 业务请求的最终像素格式。 */
     IPC_CONVERSION conversion;     /* 实际采用的像素转换路径。 */
+    volatile guint64 frame_enter_ns; /* 压缩帧进入解码器的时间戳（纳秒）。 */
 };
 
 /* 每帧独立持有资源，因此帧可在 ipc_close() 后继续使用，直至显式释放。 */
@@ -436,6 +437,16 @@ static gboolean select_stream(GstElement *source, guint num, GstCaps *caps, gpoi
            || g_atomic_int_get(&handle->selected) == (gint)num + 1;
 }
 
+/* 压缩帧进入解码器 sink pad 时记录时间戳，用于统计解码+格式转换总耗时。 */
+static GstPadProbeReturn decode_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+    IPC_HANDLE *handle = data;
+    (void)pad;
+    (void)info;
+    handle->frame_enter_ns = monotonic_ns();
+    return GST_PAD_PROBE_OK;
+}
+
 /* 根据 RTP 能力选择 H.264/H.265 解包器与解析器，再连接已创建的 MPP。
  * linked 以原子方式抢占，确保多次 pad-added 回调不会重复创建解码支路。 */
 static void source_pad_added(GstElement *source, GstPad *pad, gpointer data)
@@ -507,6 +518,16 @@ static void source_pad_added(GstElement *source, GstPad *pad, gpointer data)
         fail(handle, IPC_ERR_PIPELINE);
     }
     gst_object_unref(sink_pad);
+
+    /* 在解码器 sink pad 挂探针，记录每帧压缩数据进入解码器的时刻。 */
+    {
+        GstPad *dec_sink = gst_element_get_static_pad(handle->decoder, "sink");
+        if (dec_sink)
+        {
+            gst_pad_add_probe(dec_sink, GST_PAD_PROBE_TYPE_BUFFER, decode_start_probe, handle, NULL);
+            gst_object_unref(dec_sink);
+        }
+    }
 }
 
 /* 先停止管线，等待其内部任务退出，再移除总线回调并归还引用。
@@ -1175,6 +1196,12 @@ IPC_STATUS ipc_read(IPC_HANDLE *handle, unsigned timeout_ms, IPC_FRAME *frame)
                     return IPC_TIMEOUT;
                 }
                 continue;
+            }
+            /* 打印解码+格式转换总耗时（探针记录帧入队时刻到样本到达的时间）。 */
+            if (handle->frame_enter_ns)
+            {
+                guint64 elapsed_us = (ready - handle->frame_enter_ns) / 1000ULL;
+                g_print("[ipc] decode+convert=%.2f ms\n", elapsed_us / 1000.0);
             }
             return map_sample(handle, sample, ready, frame);
         }
