@@ -1,0 +1,9 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+Name: ipc-sdk
+Description: RK3588 RTSP H.264/H.265 hardware decode C SDK
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lipc_sdk
+Cflags: -I${includedir}
