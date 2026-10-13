@@ -37,13 +37,17 @@ CPPFLAGS += -Iinclude $(shell $(PKG_CONFIG_COMMAND) --cflags $(PACKAGES))
 CFLAGS += -O2 -Wall -Wextra -Werror -Wdeclaration-after-statement -std=c11 -fPIC
 LDLIBS += $(shell $(PKG_CONFIG_COMMAND) --libs $(PACKAGES))
 LIB = $(BUILD_DIR)/libipc_sdk.so.1.0.0
-all: $(LIB)
+EXAMPLE = $(BUILD_DIR)/read_frames
+all: $(LIB) $(EXAMPLE)
 $(BUILD_DIR):
 	mkdir -p $@
 $(LIB): src/ipc_sdk.c include/ipc_sdk.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -shared -Wl,-z,defs -Wl,-soname,libipc_sdk.so.1 -o $@ $< $(LDLIBS)
 	ln -sfn libipc_sdk.so.1.0.0 $(BUILD_DIR)/libipc_sdk.so.1
 	ln -sfn libipc_sdk.so.1 $(BUILD_DIR)/libipc_sdk.so
+$(EXAMPLE): examples/read_frames.c include/ipc_sdk.h $(LIB) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< -L$(BUILD_DIR) -lipc_sdk -lpthread $(LDLIBS)
+	ln -sfn $(EXAMPLE) read_frames
 install: all
 	install -d $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/lib
 	install -m 644 include/ipc_sdk.h $(DESTDIR)$(PREFIX)/include/

@@ -340,17 +340,9 @@ int main(int argc, char **argv)
     pthread_cond_init(&sq.not_empty, NULL);
     if (*savedir)
     {
-        char abspath[512];
         mkdir(savedir, 0755);
         pthread_create(&save_tid, NULL, save_thread_fn, &sq);
-        if (realpath(savedir, abspath))
-        {
-            printf("保存目录: %s\n", abspath);
-        }
-        else
-        {
-            printf("保存目录: %s\n", savedir);
-        }
+        printf("保存目录: %s\n", savedir);
     }
 
     signal(SIGINT, stop);
