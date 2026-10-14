@@ -13,9 +13,8 @@ echo "---"
 i=0
 while [ $i -lt $MAX_RETRY ]; do
     i=$((i + 1))
-    IPC_FRAMES="$FRAMES" sudo IPC_USER=admin IPC_PASSWORD="Twb2674535338..." \
-        IPC_TRANSPORT=tcp \
-        ./read_frames rtsp://10.10.10.98/stream1 "$FORMAT" 2>/dev/null | tee "$TMPFILE"
+    IPC_FRAMES="$FRAMES" sudo IPC_USER=admin IPC_PASSWORD="Geek_2023" \
+        ../read_frames rtsp://10.10.10.98/stream1 "$FORMAT" 2>/dev/null | tee "$TMPFILE"
     grep -q "frames=0" "$TMPFILE" || break
     echo "连接失败，第 $i 次重试..."
 done

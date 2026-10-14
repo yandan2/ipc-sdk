@@ -367,6 +367,7 @@ int main(int argc, char **argv)
         return 2;
     }
     ipc_config_init(&config);
+    config.ignore_seqnum_base = 1;
     if (ipc_format_parse(argv[2], &config.format) != IPC_OK)
     {
         return 2;
