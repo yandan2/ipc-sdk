@@ -337,6 +337,7 @@ int main(int argc, char **argv)
         0,
     };
     unsigned frames = 0;
+    unsigned save_every = 0;
     const char *conversion = NULL;
     const char *savedir = NULL;
     char error[192] =
@@ -386,7 +387,8 @@ int main(int argc, char **argv)
     if (!env_uint("IPC_FRAMES", 120, UINT_MAX, &frames) || !frames
         || !env_uint("IPC_LATENCY_MS", 50, 60000, &config.latency_ms)
         || !env_uint("IPC_TIMEOUT_MS", 10000, 3600000, &config.network_timeout_ms)
-        || !env_uint("IPC_PORT", 554, 65535, &config.port))
+        || !env_uint("IPC_PORT", 554, 65535, &config.port)
+        || !env_uint("IPC_SAVE_EVERY", 6, 10000, &save_every) || !save_every)
     {
         return 2;
     }
@@ -505,8 +507,8 @@ int main(int argc, char **argv)
         }
         ++count;
 
-        /* 将本帧异步提交给保存线程。 */
-        if (*savedir)
+        /* 按 IPC_SAVE_EVERY 间隔抽帧保存，避免保存线程积压。 */
+        if (*savedir && count % save_every == 0)
         {
             enqueue_save(&sq, &frame, savedir, count);
         }
