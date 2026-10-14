@@ -46,7 +46,7 @@ $(LIB): src/ipc_sdk.c include/ipc_sdk.h | $(BUILD_DIR)
 	ln -sfn libipc_sdk.so.1.0.0 $(BUILD_DIR)/libipc_sdk.so.1
 	ln -sfn libipc_sdk.so.1 $(BUILD_DIR)/libipc_sdk.so
 $(EXAMPLE): examples/read_frames.c include/ipc_sdk.h $(LIB) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< -L$(BUILD_DIR) -lipc_sdk -lpthread $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< -L$(BUILD_DIR) -lipc_sdk -lpthread -lpng $(LDLIBS)
 	ln -sfn $(EXAMPLE) read_frames
 install: all
 	install -d $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/lib

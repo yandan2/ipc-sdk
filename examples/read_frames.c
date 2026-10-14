@@ -60,9 +60,9 @@ static void write_png(const SaveItem *item)
 
     switch (item->format)
     {
-    case IPC_RGB:
+    case IPC_RGB24:
         color_type = PNG_COLOR_TYPE_RGB;  row_bytes = item->width * 3; bgr = 0; break;
-    case IPC_BGR:
+    case IPC_BGR24:
         color_type = PNG_COLOR_TYPE_RGB;  row_bytes = item->width * 3; bgr = 1; break;
     case IPC_RGBA:
         color_type = PNG_COLOR_TYPE_RGBA; row_bytes = item->width * 4; bgr = 0; break;
@@ -205,8 +205,8 @@ static void enqueue_save(SaveQueue *q, const IPC_FRAME *frame,
     snprintf(slot->path, sizeof(slot->path),
              "%s/frame_%s_%03ld_%04u.%s",
              dir, ts, wall.tv_nsec / 1000000L, frame_num,
-             (frame->format == IPC_RGB || frame->format == IPC_BGR  ||
-              frame->format == IPC_RGBA || frame->format == IPC_BGRA ||
+             (frame->format == IPC_RGB24 || frame->format == IPC_BGR24 ||
+              frame->format == IPC_RGBA  || frame->format == IPC_BGRA  ||
               frame->format == IPC_GRAY8) ? "png" : "yuv");
     q->tail = (q->tail + 1) % SAVE_DEPTH;
     q->count++;
