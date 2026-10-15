@@ -16,8 +16,8 @@ echo "格式=$FORMAT 帧数=$FRAMES"
 echo "A=$A  B=$B（PPS 脉冲将在 $B 触发）"
 echo "---"
 
-# t=1.5：在脉冲前 0.5 s 启动 read_frames
-sleep 1.5
+# t=1：在脉冲前 1 s 启动 read_frames
+sleep 1
 IPC_FRAMES="$FRAMES" sudo IPC_USER=admin IPC_PASSWORD="Geek_2023" \
     ../read_frames rtsp://10.10.10.98/stream1 "$FORMAT" 2>/dev/null | tee "$TMPFILE"
 
