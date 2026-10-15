@@ -1,25 +1,32 @@
 #!/bin/sh
 # 用法: ./test_time.sh [NV12|RGB|...] [帧数]
-# t=0   写入 PPS（B = 当前秒 + 2，脉冲在 2 s 后触发）
-# t=1.5 启动 read_frames，使其能拍到 t=2 s 的 PPS 脉冲
+# 导出 GPIO153 为输出，在 B 时刻拉高（LED 灭）让相机捕捉延时。
 
 FORMAT="${1:-NV12}"
 FRAMES="${2:-120}"
 TMPFILE=$(mktemp /tmp/ipc_time_XXXXXX.txt)
 
+# 导出 GPIO153 并设置为输出
+echo 153 | sudo tee /sys/class/gpio/export > /dev/null 2>&1
+echo out | sudo tee /sys/class/gpio/gpio153/direction > /dev/null
+
 A=$(date +%s)
 B=$((A + 2))
-
-# t=0：立即配置 PPS，脉冲将在 B 时刻触发
-echo "$B" | sudo tee /sys/devices/platform/pps/time > /dev/null
 echo "格式=$FORMAT 帧数=$FRAMES"
-echo "A=$A  B=$B（PPS 脉冲将在 $B 触发）"
+echo "A=$A  B=$B（GPIO153 将在 B 拉高，LED 灭）"
 echo "---"
 
-# t=1：在脉冲前 1 s 启动 read_frames
-sleep 1
+# 后台：等到 B 时刻拉高 GPIO153
+(
+    sleep $((B - $(date +%s)))
+    echo 1 | sudo tee /sys/class/gpio/gpio153/value > /dev/null
+    echo "GPIO153=1 at $(date +%H:%M:%S.%3N)"
+) &
+
+
 IPC_FRAMES="$FRAMES" sudo IPC_USER=admin IPC_PASSWORD="Geek_2023" \
     ../read_frames rtsp://10.10.10.98/stream1 "$FORMAT" 2>/dev/null | tee "$TMPFILE"
+
 
 echo "---"
 awk '
