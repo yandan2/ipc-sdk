@@ -25,7 +25,6 @@ static volatile sig_atomic_t g_interrupted = 0;
 
 /* ---------- 保存线程 ---------- */
 
-#define SAVE_DEPTH 8 /* 环形队列深度；队满时丢帧并打印警告。 */
 
 typedef struct
 {
@@ -39,7 +38,8 @@ typedef struct
 
 typedef struct
 {
-    SaveItem        items[SAVE_DEPTH];
+    SaveItem       *items;    /* 动态分配，长度为 capacity。 */
+    unsigned        capacity;
     int             head, tail, count;
     volatile int    done; /* 置 1 后消费者排空队列再退出。 */
     pthread_mutex_t lock;
@@ -147,7 +147,7 @@ static void *save_thread_fn(void *arg)
             break;
         }
         item    = q->items[q->head];
-        q->head = (q->head + 1) % SAVE_DEPTH;
+        q->head = (q->head + 1) % (int)q->capacity;
         q->count--;
         pthread_mutex_unlock(&q->lock);
 
@@ -189,7 +189,7 @@ static void enqueue_save(SaveQueue *q, const IPC_FRAME *frame,
     }
 
     pthread_mutex_lock(&q->lock);
-    if (q->count == SAVE_DEPTH)
+    if ((unsigned)q->count == q->capacity)
     {
         pthread_mutex_unlock(&q->lock);
         free(buf);
@@ -208,7 +208,7 @@ static void enqueue_save(SaveQueue *q, const IPC_FRAME *frame,
              (frame->format == IPC_RGB24 || frame->format == IPC_BGR24 ||
               frame->format == IPC_RGBA  || frame->format == IPC_BGRA  ||
               frame->format == IPC_GRAY8) ? "png" : "yuv");
-    q->tail = (q->tail + 1) % SAVE_DEPTH;
+    q->tail = (q->tail + 1) % (int)q->capacity;
     q->count++;
     pthread_cond_signal(&q->not_empty);
     pthread_mutex_unlock(&q->lock);
@@ -388,7 +388,7 @@ int main(int argc, char **argv)
         || !env_uint("IPC_LATENCY_MS", 50, 60000, &config.latency_ms)
         || !env_uint("IPC_TIMEOUT_MS", 10000, 3600000, &config.network_timeout_ms)
         || !env_uint("IPC_PORT", 554, 65535, &config.port)
-        || !env_uint("IPC_SAVE_EVERY", 6, 10000, &save_every) || !save_every)
+        || !env_uint("IPC_SAVE_EVERY", 1, 10000, &save_every) || !save_every)
     {
         return 2;
     }
@@ -421,6 +421,13 @@ int main(int argc, char **argv)
         savedir = "/home/geekplus/temp/ipc/picture";
     }
     memset(&sq, 0, sizeof(sq));
+    sq.capacity = frames / save_every + 1;
+    sq.items    = malloc(sq.capacity * sizeof(SaveItem));
+    if (!sq.items)
+    {
+        fprintf(stderr, "save queue alloc failed\n");
+        return 1;
+    }
     pthread_mutex_init(&sq.lock, NULL);
     pthread_cond_init(&sq.not_empty, NULL);
     if (*savedir)
@@ -459,6 +466,7 @@ int main(int argc, char **argv)
             pthread_mutex_unlock(&sq.lock);
             pthread_join(save_tid, NULL);
         }
+        free(sq.items);
         pthread_cond_destroy(&sq.not_empty);
         pthread_mutex_destroy(&sq.lock);
         return 1;
@@ -530,6 +538,7 @@ int main(int argc, char **argv)
         pthread_mutex_unlock(&sq.lock);
         pthread_join(save_tid, NULL);
     }
+    free(sq.items);
     pthread_cond_destroy(&sq.not_empty);
     pthread_mutex_destroy(&sq.lock);
 
