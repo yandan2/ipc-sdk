@@ -358,6 +358,10 @@ int main(int argc, char **argv)
     double stat_mean = 0.0;
     double stat_min = 0.0;
     double stat_max = 0.0;
+    long stat_n5 = 0;
+    double stat_mean5 = 0.0;
+    double stat_min5 = 0.0;
+    double stat_max5 = 0.0;
     int save_default = 0;
 
     /* 扫描并移除 -save 标志，不影响后续位置参数解析。 */
@@ -542,6 +546,17 @@ int main(int argc, char **argv)
             if (ms > stat_max)
                 stat_max = ms;
             printf("[ipc] decode+convert=%.2f ms\n", ms);
+            if (stat_n > 5)
+            {
+                double delta5;
+                stat_n5++;
+                delta5 = ms - stat_mean5;
+                stat_mean5 += delta5 / stat_n5;
+                if (stat_n5 == 1 || ms < stat_min5)
+                    stat_min5 = ms;
+                if (ms > stat_max5)
+                    stat_max5 = ms;
+            }
         }
 
         /* 按 IPC_SAVE_EVERY 间隔抽帧保存，避免保存线程积压。 */
@@ -575,6 +590,11 @@ int main(int argc, char **argv)
     {
         printf("decode+convert: n=%ld  min=%.2f ms  max=%.2f ms  avg=%.2f ms\n",
                stat_n, stat_min, stat_max, stat_mean);
+    }
+    if (stat_n5 > 0)
+    {
+        printf("decode+convert(skip5): n=%ld  min=%.2f ms  max=%.2f ms  avg=%.2f ms\n",
+               stat_n5, stat_min5, stat_max5, stat_mean5);
     }
     printf("frames=%u status=%s\n", count,
            result          ? "FAILED"
