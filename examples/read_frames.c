@@ -541,6 +541,7 @@ int main(int argc, char **argv)
                 stat_min = ms;
             if (ms > stat_max)
                 stat_max = ms;
+            printf("[ipc] decode+convert=%.2f ms\n", ms);
         }
 
         /* 按 IPC_SAVE_EVERY 间隔抽帧保存，避免保存线程积压。 */
