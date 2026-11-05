@@ -354,16 +354,34 @@ int main(int argc, char **argv)
     IPC_STATUS status = IPC_TIMEOUT;
     SaveQueue sq;
     pthread_t save_tid;
+    long stat_n = 0;
+    double stat_mean = 0.0;
+    double stat_min = 0.0;
+    double stat_max = 0.0;
+    int save_default = 0;
+
+    /* 扫描并移除 -save 标志，不影响后续位置参数解析。 */
+    {
+        int i, j;
+        for (i = 1, j = 1; i < argc; i++)
+        {
+            if (!strcmp(argv[i], "-save"))
+                save_default = 1;
+            else
+                argv[j++] = argv[i];
+        }
+        argc = j;
+    }
 
     if (argc < 3 || argc > 4)
     {
         fprintf(stderr,
-                "Usage: %s IP|rtsp-url NV12|NV21|I420|RGB|BGR|RGBA|BGRA|GRAY8 [first-frame.raw]\n"
+                "Usage: %s [-save] IP|rtsp-url NV12|NV21|I420|RGB|BGR|RGBA|BGRA|GRAY8 [first-frame.raw]\n"
                 "IPC_USER / IPC_PASSWORD: credentials; IPC_PATH: vendor RTSP path.\n"
                 "IPC_FRAMES (120), IPC_TRANSPORT (auto|tcp|udp),\n"
                 "IPC_LATENCY_MS (50), IPC_TIMEOUT_MS (10000), IPC_PORT (554),\n"
                 "IPC_CONVERSION (auto|mpp|cpu).\n"
-                "IPC_SAVEDIR: 保存目录，默认 frames；设为空串禁用保存。Ctrl-C stops capture.\n",
+                "-save: 保存到默认目录。Ctrl-C stops capture.\n",
                 argv[0]);
         return 2;
     }
@@ -414,12 +432,8 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 初始化保存队列并启动保存线程；IPC_SAVEDIR="" 禁用保存。 */
-    savedir = getenv("IPC_SAVEDIR");
-    if (!savedir)
-    {
-        savedir = "/home/geekplus/temp/ipc/picture";
-    }
+    /* 初始化保存队列并启动保存线程；-save 使用默认目录，否则不保存。 */
+    savedir = save_default ? "/home/geekplus/temp/ipc/picture" : "";
     memset(&sq, 0, sizeof(sq));
     sq.capacity = frames / save_every + 1;
     sq.items    = malloc(sq.capacity * sizeof(SaveItem));
@@ -515,6 +529,20 @@ int main(int argc, char **argv)
         }
         ++count;
 
+        /* Welford 在线算法累积解码+转换耗时（单位 ms）。 */
+        if (frame.decode_convert_us)
+        {
+            double ms = frame.decode_convert_us / 1000.0;
+            double delta;
+            stat_n++;
+            delta = ms - stat_mean;
+            stat_mean += delta / stat_n;
+            if (stat_n == 1 || ms < stat_min)
+                stat_min = ms;
+            if (ms > stat_max)
+                stat_max = ms;
+        }
+
         /* 按 IPC_SAVE_EVERY 间隔抽帧保存，避免保存线程积压。 */
         if (*savedir && count % save_every == 0)
         {
@@ -542,6 +570,11 @@ int main(int argc, char **argv)
     pthread_cond_destroy(&sq.not_empty);
     pthread_mutex_destroy(&sq.lock);
 
+    if (stat_n > 0)
+    {
+        printf("decode+convert: n=%ld  min=%.2f ms  max=%.2f ms  avg=%.2f ms\n",
+               stat_n, stat_min, stat_max, stat_mean);
+    }
     printf("frames=%u status=%s\n", count,
            result          ? "FAILED"
            : g_interrupted ? "INTERRUPTED"

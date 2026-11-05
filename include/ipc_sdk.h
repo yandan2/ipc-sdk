@@ -193,6 +193,9 @@ typedef struct IPC_FRAME
 
     /** 实际采用的转换路径，为 MPP_ONLY 或 CPU；GRAY8 的 Y 平面视图记为 CPU。 */
     IPC_CONVERSION conversion;
+
+    /** 解码加格式转换的耗时，单位微秒；0 表示无效（首帧或探针未触发）。 */
+    uint64_t decode_convert_us;
 } IPC_FRAME;
 
 /**

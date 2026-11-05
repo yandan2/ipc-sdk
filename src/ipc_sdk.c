@@ -1057,6 +1057,9 @@ static IPC_STATUS map_sample(IPC_HANDLE *handle, GstSample *sample, uint64_t rea
                         ? (int64_t)GST_BUFFER_PTS(buffer)
                         : -1;
     frame->ready_monotonic_ns = ready;
+    frame->decode_convert_us = handle->frame_enter_ns
+                                   ? (ready - handle->frame_enter_ns) / 1000ULL
+                                   : 0;
     frame->codec = ipc_get_codec(handle);
     frame->conversion = handle->conversion;
 
@@ -1196,12 +1199,6 @@ IPC_STATUS ipc_read(IPC_HANDLE *handle, unsigned timeout_ms, IPC_FRAME *frame)
                     return IPC_TIMEOUT;
                 }
                 continue;
-            }
-            /* 打印解码+格式转换总耗时（探针记录帧入队时刻到样本到达的时间）。 */
-            if (handle->frame_enter_ns)
-            {
-                guint64 elapsed_us = (ready - handle->frame_enter_ns) / 1000ULL;
-                g_print("[ipc] decode+convert=%.2f ms\n", elapsed_us / 1000.0);
             }
             return map_sample(handle, sample, ready, frame);
         }
